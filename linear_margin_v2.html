@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linear Classification</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#1a1a1a;padding:20px;max-width:740px;margin:0 auto}
+h2{font-size:15px;font-weight:500;margin-bottom:14px;color:#1a1a1a}
+canvas{display:block;width:100%;border:1px solid #e5e3dd;border-radius:10px;background:#fafaf8}
+.row{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.card{background:#f4f3ee;border-radius:8px;padding:9px 14px;flex:1;min-width:100px}
+.card .lbl{font-size:11px;color:#999;margin-bottom:2px}
+.card .val{font-size:20px;font-weight:500}
+.card .val.good{color:#085041}.card .val.warn{color:#633806}.card .val.bad{color:#791F1F}
+.verdict{background:#f4f3ee;border-radius:8px;padding:9px 14px;flex:2;min-width:160px;display:flex;align-items:center}
+.badge{font-size:12px;font-weight:500;padding:3px 10px;border-radius:20px}
+.badge.good{background:#E1F5EE;color:#085041}
+.badge.warn{background:#FAEEDA;color:#633806}
+.badge.bad{background:#FAECE7;color:#712B13}
+.ctrls{margin-top:12px;display:flex;flex-direction:column;gap:7px}
+.cr{display:flex;align-items:center;gap:10px;font-size:12px;color:#666}
+.cr span:first-child{width:80px;flex-shrink:0}
+.cr input[type=range]{flex:1;accent-color:#378ADD}
+.cr .rd{width:40px;text-align:right;font-variant-numeric:tabular-nums;color:#1a1a1a;font-size:12px}
+.btns{margin-top:10px;display:flex;gap:8px}
+button{font-size:12px;padding:5px 12px;border:1px solid #ccc;border-radius:6px;background:#fff;cursor:pointer}
+button:hover{background:#f0efea}
+button.p{background:#1a1a1a;color:#fff;border-color:#1a1a1a}
+button.p:hover{background:#333}
+.hint{font-size:11px;color:#aaa;margin-top:8px;line-height:1.6}
+</style>
+</head>
+<body>
+
+<h2>Đường phân chia nào tốt nhất? — Kéo để khám phá</h2>
+<canvas id="cv"></canvas>
+
+<div class="row">
+  <div class="card">
+    <div class="lbl">Lề (margin)</div>
+    <div class="val" id="mv">—</div>
+  </div>
+  <div class="card">
+    <div class="lbl">Khoảng cách nhỏ nhất</div>
+    <div class="val" id="dv">—</div>
+  </div>
+  <div class="verdict">
+    <div id="vd"><span class="badge">—</span></div>
+  </div>
+</div>
+
+<div class="ctrls">
+  <div class="cr">
+    <span>Xoay đường</span>
+    <input type="range" id="as" min="-85" max="85" value="0" step="1">
+    <span class="rd" id="al">0°</span>
+  </div>
+  <div class="cr">
+    <span>Dịch đường</span>
+    <input type="range" id="os" min="-150" max="150" value="0" step="1">
+    <span class="rd" id="ol">0</span>
+  </div>
+</div>
+
+<div class="btns">
+  <button onclick="doReset()">Đặt lại</button>
+  <button class="p" onclick="doBest()">Xem đường tối ưu</button>
+</div>
+
+<p class="hint">
+  Điểm viền đậm = điểm gần đường nhất (support vectors).<br>
+  Đoạn màu trên đường = lề (margin).<br>
+  Mục tiêu: tìm góc và vị trí sao cho lề lớn nhất mà vẫn phân loại đúng.
+</p>
+
+<script>
+const cv = document.getElementById('cv');
+const c  = cv.getContext('2d');
+const W = 680, H = 390;
+cv.width = W; cv.height = H;
+
+const PL=56, PR=28, PT=22, PB=46;
+const PW = W-PL-PR, PH = H-PT-PB;
+
+const px = x => PL + x*PW;
+const py = y => PT + PH - y*PH;
+
+const SP = [
+  [0.85,0.78],[0.92,0.65],[0.74,0.82],[0.80,0.70],
+  [0.88,0.80],[0.76,0.68],[0.90,0.72],[0.82,0.76],[0.70,0.75]
+];
+const NM = [
+  [0.18,0.25],[0.25,0.18],[0.12,0.32],[0.30,0.22],
+  [0.20,0.28],[0.15,0.20],[0.26,0.30],[0.22,0.15],[0.10,0.26]
+];
+
+let ang = 0, off = 0;
+
+function getLP() {
+  const r  = ang * Math.PI / 180;
+  const nx = -Math.sin(r), ny = Math.cos(r);
+  const cx = PL + PW/2 + off*nx;
+  const cy = PT + PH/2 + off*ny;
+  return { r, nx, ny, cx, cy, dx: Math.cos(r), dy: Math.sin(r) };
+}
+
+function sd(sx, sy, l) {
+  return (sx - l.cx)*l.nx + (sy - l.cy)*l.ny;
+}
+function foot(sx, sy, l) {
+  const d = sd(sx, sy, l);
+  return [sx - d*l.nx, sy - d*l.ny];
+}
+
+function draw() {
+  c.clearRect(0, 0, W, H);
+  const l = getLP();
+
+  // grid
+  c.strokeStyle = 'rgba(0,0,0,0.05)'; c.lineWidth = 0.5;
+  for (let v = 0; v <= 1.001; v += 0.25) {
+    c.beginPath(); c.moveTo(px(v), PT);      c.lineTo(px(v), PT+PH); c.stroke();
+    c.beginPath(); c.moveTo(PL,    py(v));   c.lineTo(PL+PW, py(v)); c.stroke();
+  }
+
+  // axes
+  c.strokeStyle = 'rgba(0,0,0,0.18)'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(PL, PT+PH); c.lineTo(PL+PW+8, PT+PH); c.stroke();
+  c.beginPath(); c.moveTo(PL, PT+PH); c.lineTo(PL,      PT-8);   c.stroke();
+
+  // tick labels
+  c.font = '10px sans-serif';
+  for (let v = 0; v <= 1.001; v += 0.25) {
+    c.fillStyle = '#aaa'; c.textAlign = 'center';
+    c.fillText(v.toFixed(2), px(v), PT+PH+14);
+    c.textAlign = 'right';
+    c.fillText(v.toFixed(2), PL-5, py(v)+3);
+  }
+  c.fillStyle = '#888'; c.font = '11px sans-serif'; c.textAlign = 'center';
+  c.fillText('x\u2081  (t\u1ea7n su\u1ea5t "khuy\u1ebfn m\u00e3i")', PL+PW/2, PT+PH+30);
+  c.save();
+  c.translate(13, PT+PH/2); c.rotate(-Math.PI/2);
+  c.fillText('x\u2082  (t\u1ec9 l\u1ec7 link l\u1ea1)', 0, 0);
+  c.restore();
+
+  // decision boundary
+  const ext = 700;
+  c.strokeStyle = '#378ADD'; c.lineWidth = 2; c.setLineDash([10,6]);
+  c.beginPath();
+  c.moveTo(l.cx - l.dx*ext, l.cy - l.dy*ext);
+  c.lineTo(l.cx + l.dx*ext, l.cy + l.dy*ext);
+  c.stroke();
+  c.setLineDash([]);
+
+  const tlx = Math.min(PL+PW-88, l.cx + l.dx*ext*0.62);
+  const tly = Math.max(PT+14,  Math.min(PT+PH-8, l.cy + l.dy*ext*0.62));
+  c.fillStyle = '#185FA5'; c.font = '500 11px sans-serif'; c.textAlign = 'left';
+  c.fillText('w\u00b7x + b = 0', tlx, tly - 7);
+
+  // find closest + separation check
+  let mS = Infinity, mN = Infinity, cS = null, cN = null;
+  const sSigns = SP.map(([x1,x2]) => sd(px(x1), py(x2), l));
+  const nSigns = NM.map(([x1,x2]) => sd(px(x1), py(x2), l));
+  const spamSide = sSigns.filter(s => s > 0).length >= SP.length/2 ? 1 : -1;
+  let ok = true;
+  SP.forEach(([x1,x2], i) => {
+    const d = Math.abs(sSigns[i]);
+    if (d < mS) { mS = d; cS = [px(x1), py(x2)]; }
+    if (sSigns[i] * spamSide < 0) ok = false;
+  });
+  NM.forEach(([x1,x2], i) => {
+    const d = Math.abs(nSigns[i]);
+    if (d < mN) { mN = d; cN = [px(x1), py(x2)]; }
+    if (nSigns[i] * spamSide > 0) ok = false;
+  });
+
+  const margin = (mS + mN) / PW;
+
+  if (cS && cN) {
+    const [fx1,fy1] = foot(cS[0], cS[1], l);
+    const [fx2,fy2] = foot(cN[0], cN[1], l);
+    const s = 6;
+
+    // dashed perpendicular lines
+    c.setLineDash([4,3]);
+    c.strokeStyle = '#D85A30'; c.lineWidth = 1.5;
+    c.beginPath(); c.moveTo(cS[0],cS[1]); c.lineTo(fx1,fy1); c.stroke();
+    c.strokeStyle = '#0F6E56'; c.lineWidth = 1.5;
+    c.beginPath(); c.moveTo(cN[0],cN[1]); c.lineTo(fx2,fy2); c.stroke();
+    c.setLineDash([]);
+
+    // right-angle marks
+    function ra(fx, fy) {
+      c.strokeStyle = 'rgba(0,0,0,0.18)'; c.lineWidth = 0.8;
+      c.beginPath();
+      c.moveTo(fx + l.nx*s,           fy + l.ny*s);
+      c.lineTo(fx + l.nx*s + l.dx*s,  fy + l.ny*s + l.dy*s);
+      c.lineTo(fx + l.dx*s,           fy + l.dy*s);
+      c.stroke();
+    }
+    ra(fx1, fy1); ra(fx2, fy2);
+
+    // margin bracket
+    const mc = !ok ? '#E24B4A' : margin > 0.14 ? '#1D9E75' : margin > 0.07 ? '#BA7517' : '#E24B4A';
+    c.strokeStyle = mc; c.lineWidth = 4; c.lineCap = 'round';
+    c.beginPath(); c.moveTo(fx1,fy1); c.lineTo(fx2,fy2); c.stroke();
+    c.lineCap = 'butt';
+
+    // margin label
+    const mlx = (fx1+fx2)/2 + l.nx*22;
+    const mly = (fy1+fy2)/2 + l.ny*22;
+    c.fillStyle = mc; c.font = '500 12px sans-serif'; c.textAlign = 'center';
+    c.fillText('l\u1ec1 = ' + margin.toFixed(3), mlx, mly + 4);
+
+    // update UI
+    const cls = !ok ? 'bad' : margin > 0.14 ? 'good' : margin > 0.07 ? 'warn' : 'bad';
+    const setCard = (id, v) => {
+      const e = document.getElementById(id);
+      e.textContent = v;
+      e.className = 'val ' + cls;
+    };
+    setCard('mv', margin.toFixed(3));
+    setCard('dv', (Math.min(mS,mN)/PW).toFixed(3));
+
+    const vEl = document.getElementById('vd');
+    if (!ok)
+      vEl.innerHTML = '<span class="badge bad">Ph\u00e2n lo\u1ea1i sai \u2014 \u0111\u01b0\u1eddng c\u1eaft qua c\u1ee5m</span>';
+    else if (margin > 0.14)
+      vEl.innerHTML = '<span class="badge good">T\u1ed1t \u2014 l\u1ec1 r\u1ed9ng, ph\u00e2n chia r\u00f5</span>';
+    else if (margin > 0.07)
+      vEl.innerHTML = '<span class="badge warn">T\u1ea1m \u2014 l\u1ec1 h\u1eb9p, d\u1ec5 sai v\u1edbi d\u1eef li\u1ec7u m\u1edbi</span>';
+    else
+      vEl.innerHTML = '<span class="badge bad">X\u1ea5u \u2014 l\u1ec1 r\u1ea5t h\u1eb9p</span>';
+  }
+
+  // draw all points
+  function drawPts(arr, fill, stroke, lw) {
+    arr.forEach(([x1,x2]) => {
+      c.beginPath(); c.arc(px(x1), py(x2), 7, 0, Math.PI*2);
+      c.fillStyle = fill; c.fill();
+      c.strokeStyle = stroke; c.lineWidth = lw; c.stroke();
+    });
+  }
+  drawPts(SP, '#F0997B', '#D85A30', 1.2);
+  drawPts(NM, '#5DCAA5', '#0F6E56', 1.2);
+
+  // closest points bold
+  if (cS) {
+    c.beginPath(); c.arc(cS[0],cS[1],7,0,Math.PI*2);
+    c.fillStyle='#D85A30'; c.fill();
+    c.strokeStyle='#6B1C00'; c.lineWidth=2.5; c.stroke();
+  }
+  if (cN) {
+    c.beginPath(); c.arc(cN[0],cN[1],7,0,Math.PI*2);
+    c.fillStyle='#0F6E56'; c.fill();
+    c.strokeStyle='#03211B'; c.lineWidth=2.5; c.stroke();
+  }
+
+  // legend
+  const ly = PT + PH + 40;
+  c.font = '10px sans-serif'; c.textAlign = 'left';
+  let lx = PL;
+  [
+    [' Spam',           '#F0997B','#D85A30',1.2],
+    [' B\u00ecnh th\u01b0\u1eddng', '#5DCAA5','#0F6E56',1.2],
+    [' \u0110i\u1ec3m g\u1ea7n nh\u1ea5t', '#D85A30','#6B1C00',2.5]
+  ].forEach(([label, fill, stroke, lw]) => {
+    c.beginPath(); c.arc(lx+5, ly-4, 5, 0, Math.PI*2);
+    c.fillStyle = fill; c.fill();
+    c.strokeStyle = stroke; c.lineWidth = lw; c.stroke();
+    c.fillStyle = '#666'; c.fillText(label, lx+12, ly);
+    lx += c.measureText(label).width + 28;
+  });
+}
+
+function upd() {
+  ang = +document.getElementById('as').value;
+  off = +document.getElementById('os').value;
+  document.getElementById('al').textContent = ang + '\u00b0';
+  document.getElementById('ol').textContent = off;
+  draw();
+}
+
+function doReset() {
+  document.getElementById('as').value = 0;
+  document.getElementById('os').value = 0;
+  upd();
+}
+
+function doBest() {
+  const ta = -48, to = -8, steps = 30;
+  let step = 0;
+  const sa = +document.getElementById('as').value;
+  const so = +document.getElementById('os').value;
+  function run() {
+    step++;
+    const t = step/steps;
+    const e = t < 0.5 ? 2*t*t : -1+(4-2*t)*t;
+    document.getElementById('as').value = Math.round(sa + (ta-sa)*e);
+    document.getElementById('os').value = Math.round(so + (to-so)*e);
+    upd();
+    if (step < steps) requestAnimationFrame(run);
+  }
+  requestAnimationFrame(run);
+}
+
+document.getElementById('as').addEventListener('input', upd);
+document.getElementById('os').addEventListener('input', upd);
+upd();
+</script>
+</body>
+</html>
