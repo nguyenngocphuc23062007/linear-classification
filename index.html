@@ -71,11 +71,12 @@ button.p:hover{background:#333}
 
 <p class="hint">
   Điểm viền đậm = điểm gần đường nhất (support vectors).<br>
-  Đoạn màu trên đường = lề (margin).<br>
+  Đoạn màu trên đường = lề (margin) = 2 × khoảng cách nhỏ nhất.<br>
   Mục tiêu: tìm góc và vị trí sao cho lề lớn nhất mà vẫn phân loại đúng.
 </p>
 
 <script>
+(function() {
 const cv = document.getElementById('cv');
 const c  = cv.getContext('2d');
 const W = 680, H = 320;
@@ -98,11 +99,11 @@ const NM = [
 
 let ang = 0, off = 0;
 
-function getLP() {
-  const r  = ang * Math.PI / 180;
+function getLP(a, o) {
+  const r  = a * Math.PI / 180;
   const nx = -Math.sin(r), ny = Math.cos(r);
-  const cx = PL + PW/2 + off*nx;
-  const cy = PT + PH/2 + off*ny;
+  const cx = PL + PW/2 + o*nx;
+  const cy = PT + PH/2 + o*ny;
   return { r, nx, ny, cx, cy, dx: Math.cos(r), dy: Math.sin(r) };
 }
 
@@ -114,9 +115,48 @@ function foot(sx, sy, l) {
   return [sx - d*l.nx, sy - d*l.ny];
 }
 
+// Evaluate margin for given angle and offset — returns {margin, ok} or null
+function evalLine(a, o) {
+  const l = getLP(a, o);
+  let mS = Infinity, mN = Infinity;
+  const sSigns = SP.map(([x1,x2]) => sd(px(x1), py(x2), l));
+  const nSigns = NM.map(([x1,x2]) => sd(px(x1), py(x2), l));
+  const spamSide = sSigns.filter(s => s > 0).length >= SP.length/2 ? 1 : -1;
+  let ok = true;
+  SP.forEach((_, i) => {
+    const d = Math.abs(sSigns[i]);
+    if (d < mS) mS = d;
+    if (sSigns[i] * spamSide < 0) ok = false;
+  });
+  NM.forEach((_, i) => {
+    const d = Math.abs(nSigns[i]);
+    if (d < mN) mN = d;
+    if (nSigns[i] * spamSide > 0) ok = false;
+  });
+  const minDist = Math.min(mS, mN);
+  const margin = 2 * minDist / PW;  // margin = 2 * khoảng cách nhỏ nhất
+  return { margin, minDist: minDist / PW, ok, mS, mN };
+}
+
+// Find optimal line by grid search
+function findBest() {
+  let bestMargin = -1, bestA = 0, bestO = 0;
+  for (let a = -85; a <= 85; a += 0.5) {
+    for (let o = -150; o <= 150; o += 1) {
+      const res = evalLine(a, o);
+      if (res.ok && res.margin > bestMargin) {
+        bestMargin = res.margin;
+        bestA = a;
+        bestO = o;
+      }
+    }
+  }
+  return { a: bestA, o: bestO };
+}
+
 function draw() {
   c.clearRect(0, 0, W, H);
-  const l = getLP();
+  const l = getLP(ang, off);
 
   // grid
   c.strokeStyle = 'rgba(0,0,0,0.05)'; c.lineWidth = 0.5;
@@ -176,14 +216,17 @@ function draw() {
     if (nSigns[i] * spamSide > 0) ok = false;
   });
 
-  const margin = (mS + mN) / PW;
+  // margin = 2 * khoảng cách nhỏ nhất
+  const minDist = Math.min(mS, mN);
+  const margin = 2 * minDist / PW;
+  const minDistDisplay = minDist / PW;
 
   if (cS && cN) {
     const [fx1,fy1] = foot(cS[0], cS[1], l);
     const [fx2,fy2] = foot(cN[0], cN[1], l);
     const s = 6;
 
-    // dashed perpendicular lines
+    // dashed perpendicular lines (to closest point on each side)
     c.setLineDash([4,3]);
     c.strokeStyle = '#D85A30'; c.lineWidth = 1.5;
     c.beginPath(); c.moveTo(cS[0],cS[1]); c.lineTo(fx1,fy1); c.stroke();
@@ -202,15 +245,24 @@ function draw() {
     }
     ra(fx1, fy1); ra(fx2, fy2);
 
-    // margin bracket
     const mc = !ok ? '#E24B4A' : margin > 0.14 ? '#1D9E75' : margin > 0.07 ? '#BA7517' : '#E24B4A';
+
+    // margin bracket = 2 × minDist, vẽ vuông góc với đường tại điểm giữa 2 foot
+    // Tìm điểm giữa của fx1,fy1 và fx2,fy2 trên đường
+    const midFx = (fx1 + fx2) / 2;
+    const midFy = (fy1 + fy2) / 2;
+    // Vẽ đoạn từ -minDist đến +minDist dọc pháp tuyến từ midF
+    const bracketX1 = midFx + l.nx * minDist;
+    const bracketY1 = midFy + l.ny * minDist;
+    const bracketX2 = midFx - l.nx * minDist;
+    const bracketY2 = midFy - l.ny * minDist;
+
     c.strokeStyle = mc; c.lineWidth = 4; c.lineCap = 'round';
-    c.beginPath(); c.moveTo(fx1,fy1); c.lineTo(fx2,fy2); c.stroke();
+    c.beginPath(); c.moveTo(bracketX1, bracketY1); c.lineTo(bracketX2, bracketY2); c.stroke();
     c.lineCap = 'butt';
 
-    // margin label
-    const mlx = (fx1+fx2)/2 + l.nx*22;
-    const mly = (fy1+fy2)/2 + l.ny*22;
+    const mlx = midFx + l.nx*22;
+    const mly = midFy + l.ny*22;
     c.fillStyle = mc; c.font = '500 12px sans-serif'; c.textAlign = 'center';
     c.fillText('l\u1ec1 = ' + margin.toFixed(3), mlx, mly + 4);
 
@@ -222,7 +274,7 @@ function draw() {
       e.className = 'val ' + cls;
     };
     setCard('mv', margin.toFixed(3));
-    setCard('dv', (Math.min(mS,mN)/PW).toFixed(3));
+    setCard('dv', minDistDisplay.toFixed(3));
 
     const vEl = document.getElementById('vd');
     if (!ok)
@@ -290,7 +342,8 @@ function doReset() {
 }
 
 function doBest() {
-  const ta = -129, to = -2, steps = 30;
+  const best = findBest();
+  const ta = Math.round(best.a), to = Math.round(best.o), steps = 30;
   let step = 0;
   const sa = +document.getElementById('as').value;
   const so = +document.getElementById('os').value;
@@ -309,6 +362,7 @@ function doBest() {
 document.getElementById('as').addEventListener('input', upd);
 document.getElementById('os').addEventListener('input', upd);
 upd();
+})();
 </script>
 </body>
 </html>
